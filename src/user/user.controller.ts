@@ -24,13 +24,13 @@ import { UserRole } from 'src/common/enums/user-role';
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
-  // ── Public — register ──────────────────────
+
   @Post()
   create(@Body() createUserDto: CreateUserDto) {
     return this.userService.create(createUserDto);
   }
 
-  // ── ADMIN only — get all users with degrees ─
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @Get()
@@ -38,7 +38,7 @@ export class UserController {
     return this.userService.findAll();
   }
 
-  // ── ADMIN only — get single user with degrees
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @Get(':id')
@@ -48,7 +48,7 @@ export class UserController {
     return user;
   }
 
-  // ── ADMIN only — update user ───────────────
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @Patch(':id')
@@ -61,7 +61,7 @@ export class UserController {
     return { message: 'User updated successfully' };
   }
 
-  // ── ADMIN only — delete user ───────────────
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @Delete(':id')

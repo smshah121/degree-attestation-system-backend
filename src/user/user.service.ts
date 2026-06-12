@@ -21,19 +21,19 @@ export class UserService {
       ...createUserDto,
       email: createUserDto.email.toLowerCase(),
       password: hashedPassword,
-      role: UserRole.STUDENT, // default role for new users
+      role: UserRole.STUDENT, 
     });
     return this.userRepository.save(user);
   }
 
-  // ← added degrees relation
+
   findAll(): Promise<User[]> {
     return this.userRepository.find({
       relations: { degrees: true },
     });
   }
 
-  // ← added degrees relation
+
   findOne(id: number): Promise<User | null> {
     return this.userRepository.findOne({
       where: { id },
@@ -64,5 +64,5 @@ export class UserService {
     return this.userRepository.findOne({ where: { email : email.toLowerCase() } });
   }
 
-  // ← removed duplicate findById, findOne does the same thing
+
 }

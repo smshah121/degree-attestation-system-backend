@@ -11,7 +11,7 @@ import { DegreeStatus } from "src/common/enums/degree-status";
 import * as crypto from 'crypto';
 import * as QRCode from 'qrcode';
 import { BlockchainService } from "src/blockchain/blockchain.service";
-import { OcrService } from "./ocr.service"; // 👈 1. Import the newly created OCR Service
+import { OcrService } from "./ocr.service";
 import * as fs from 'fs';
 import * as path from 'path';
 import PDFDocument = require('pdfkit');
@@ -27,10 +27,10 @@ export class DegreeService {
     private userRepo: Repository<User>,
 
     private readonly blockchainService: BlockchainService,
-    private readonly ocrService: OcrService, // 👈 2. Inject the OcrService securely
+    private readonly ocrService: OcrService, 
   ) {}
 
-  // ── Student submits degree request ─────────
+
   async createDegree(dto: CreateDegreeDto, userId: number) {
     const user = await this.userRepo.findOneBy({ id: userId });
     if (!user) throw new NotFoundException('User not found');
@@ -53,7 +53,7 @@ export class DegreeService {
     return this.degreeRepo.save(degree);
   }
 
-  // ── 🚀 NEW: Student uploads transcript -> OCR scans -> Auto Approves if GPA >= 2.5 ───
+ 
  async uploadStudentTranscriptWithOcr(degreeId: number, fileBuffer: Buffer, relativePath: string, userId: number) {
   const degree = await this.degreeRepo.findOne({
     where: { id: degreeId },
@@ -64,32 +64,31 @@ export class DegreeService {
     throw new ForbiddenException('You can only upload a transcript to your own degree profile');
   }
 
-  // 🎯 FIX 1: Physically save the memory stream buffer to disk so files actually exist!
+ 
   const absolutePath = path.join(__dirname, '..', '..', relativePath);
   const targetDir = path.dirname(absolutePath);
   if (!fs.existsSync(targetDir)) {
     fs.mkdirSync(targetDir, { recursive: true });
   }
-  fs.writeFileSync(absolutePath, fileBuffer); // Committed to local disk storage arrays
+  fs.writeFileSync(absolutePath, fileBuffer);
 
-  // Save the relative path to the existing single database column
+
   degree.marksheet = relativePath;
   await this.degreeRepo.save(degree);
 
-  // Step A: Parse image data to text blocks using Tesseract
+ 
   const scrapedText = await this.ocrService.extractText(fileBuffer);
 
-  // 🎯 DEBUG TERMINAL LOGS: See exactly what text Tesseract extracted
+ 
   console.log("================= AI OCR RAW EXTRACTED TEXT =================");
   console.log(scrapedText || "[EMPTY TEXT EXTRACTED - IMAGE MIGHT BE BLURRY]");
   console.log("=============================================================");
 
-  // Step B: Match Applicant Identity String
+
   const isNameVerified = this.ocrService.verifyMatch(scrapedText, degree.studentName);
   if (!isNameVerified) {
     console.warn(`[OCR WARNING] Name mismatch detected for Case #${degreeId}. Dropped to manual review.`);
     
-    // Explicitly keeping status as PENDING so an admin can audit name variations manually
     degree.status = DegreeStatus.PENDING; 
     await this.degreeRepo.save(degree);
     
@@ -99,10 +98,10 @@ export class DegreeService {
     };
   }
 
-  // Step C: Validate University GPA Gatekeeper Metric (>= 2.5)
+ 
   const gpaValidationResult = this.ocrService.validateGpaMetric(scrapedText);
   
-  // 🎯 FIX 2: Check for direct rejections versus parsing failures explicitly
+
   if (gpaValidationResult === 'REJECTED') {
     console.warn(`[AUTO-REJECT] Case #${degreeId} dropped below academic standards (< 2.5).`);
     degree.status = DegreeStatus.REJECTED; 
@@ -125,7 +124,7 @@ export class DegreeService {
     };
   }
 
-  // Step D: Conditions met! Automatically route straight to the blockchain anchoring pipeline
+  
   console.log(`[AUTO-APPROVAL SUCCESS] OCR verified Case #${degreeId}. Running smart contract deployment tasks...`);
   const approvedDegree = await this.approveDegree(degreeId);
 
@@ -136,7 +135,7 @@ export class DegreeService {
   };
 }
 
-  // ── Admin approves + generates hash + QR ───
+
   async approveDegree(id: number) {
     const degree = await this.degreeRepo.findOne({
       where: { id },
@@ -233,7 +232,7 @@ export class DegreeService {
     return { ...updated, marksheetPath: updated.marksheet, pdfPath: updated.pdf };
   }
 
-  // ── Admin rejects degree ───────────────────
+
   async rejectDegree(id: number) {
     const degree = await this.degreeRepo.findOneBy({ id });
     if (!degree) throw new NotFoundException('Degree not found');
@@ -245,7 +244,7 @@ export class DegreeService {
     return { ...updated, marksheetPath: updated.marksheet, pdfPath: updated.pdf };
   }
 
-  // ── Admin upload PDF ───────────────────────
+
   async uploadPdf(degreeId: number, pdfPath: string) {
     const degree = await this.degreeRepo.findOneBy({ id: degreeId });
     if (!degree) throw new NotFoundException('Degree not found');
@@ -255,7 +254,7 @@ export class DegreeService {
     return { ...updatedDegree, pdfPath: updatedDegree.pdf };
   }
 
-  // ── Legacy Student upload marksheet (Bypassed if using OCR endpoint) ───
+ 
   async uploadMarksheet(degreeId: number, imagePath: string, userId: number) {
     const degree = await this.degreeRepo.findOne({
       where: { id: degreeId },
@@ -271,7 +270,7 @@ export class DegreeService {
     return { ...updatedDegree, marksheetPath: updatedDegree.marksheet };
   }
 
-  // ── Admin get all degrees ──────────────────
+
   async findAll() {
     const records = await this.degreeRepo.find({
       relations: { student: true },
@@ -280,7 +279,7 @@ export class DegreeService {
     return records.map(d => ({ ...d, marksheetPath: d.marksheet, pdfPath: d.pdf }));
   }
 
-  // ── Admin get pending degrees ──────────────
+
   async findPending() {
     const records = await this.degreeRepo.find({
       where: { status: DegreeStatus.PENDING },
@@ -290,7 +289,7 @@ export class DegreeService {
     return records.map(d => ({ ...d, marksheetPath: d.marksheet, pdfPath: d.pdf }));
   }
 
-  // ── Get single degree ──────────────────────
+
   async findOne(id: number, isAdmin?: boolean) {
     const degree = await this.degreeRepo.findOne({
       where: { id },
@@ -307,7 +306,7 @@ export class DegreeService {
     return { ...degree, marksheetPath: degree.marksheet, pdfPath: degree.pdf };
   }
 
-  // ── Student get own degrees ────────────────
+
   async findMyDegrees(userId: number) {
     const degrees = await this.degreeRepo.find({
       where: { student: { id: userId } },
@@ -325,7 +324,7 @@ export class DegreeService {
     });
   }
 
-  // ── Verify degree by hash ──────────────────
+
   async verifyByHash(hash: string) {
     console.log(`[AUDIT] Verification attempt for hash: ${hash} at ${new Date().toISOString()}`);
 
@@ -392,14 +391,14 @@ export class DegreeService {
     }
   }
 
-  // ── Admin delete degree ────────────────────
+
   async deleteDegree(id: number) {
     const degree = await this.degreeRepo.findOneBy({ id });
     if (!degree) throw new NotFoundException('Degree not found');
     return this.degreeRepo.remove(degree);
   }
 
-  // ── Dashboard Stats ────────────────────────
+
   async getDashboardStats() {
     const total = await this.degreeRepo.count();
 
@@ -430,7 +429,7 @@ export class DegreeService {
     };
   }
 
-  // ── Audit Log ──────────────────────────────
+
   async getAuditLog() {
     const allDegrees = await this.degreeRepo.find({
       relations: { student: true },
@@ -453,7 +452,7 @@ export class DegreeService {
     }));
   }
 
-  // ── Report ─────────────────────────────────
+
   async getReport() {
     const total = await this.degreeRepo.count();
     const pending = await this.degreeRepo.count({ where: { status: DegreeStatus.PENDING } });

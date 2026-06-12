@@ -22,18 +22,16 @@ export class OcrService {
     return cleanOcr.includes(cleanValue);
   }
 
-  /**
-   * Target Evaluation Rule: Highly robust university GPA processing engine
-   */
+ 
   validateGpaMetric(extractedText: string): 'PASSED' | 'REJECTED' | 'UNREADABLE' {
-    // 1. Clean common OCR symbol glitches to fix misread text patterns
+ 
     let text = extractedText.toUpperCase();
-    text = text.replace(/[£¢€]/g, ''); // Strips out misread currency symbols like £
-    text = text.replace(/CEA/g, 'CGPA'); // Fixes Tesseract's CEA typo match explicitly
+    text = text.replace(/[£¢€]/g, ''); 
+    text = text.replace(/CEA/g, 'CGPA'); 
 
     let extractedGpa = 0.0;
 
-    // Pattern A: Primary Match (e.g., "CGPA 2.37" or "CGPA) 2.37")
+
     const primaryGpaRegex = /(?:CGPA|GPA|CUMULATIVE)[\s\D]*([0-4]\.\d{1,2})/i;
     const primaryMatch = text.match(primaryGpaRegex);
 
@@ -41,19 +39,19 @@ export class OcrService {
       extractedGpa = parseFloat(primaryMatch[1]);
       this.logger.log(`[OCR SUCCESS] Found standard decimal GPA: ${extractedGpa}`);
     } 
-    // Pattern B: Hard Typo Match (e.g., "CEA) 237" or "CGPA 237" where the decimal point is missing)
+   
     else {
       const brokenDecimalRegex = /(?:CGPA|GPA|CUMULATIVE|CEA)[\s\D]*([0-4])\s*(\d{2})/i;
       const brokenMatch = text.match(brokenDecimalRegex);
 
       if (brokenMatch && brokenMatch[1] && brokenMatch[2]) {
-        // Reconstruct "2" and "37" back into "2.37" safely
+       
         extractedGpa = parseFloat(`${brokenMatch[1]}.${brokenMatch[2]}`);
         this.logger.log(`[OCR RECONSTRUCTION] Fixed missing decimal typo: ${extractedGpa}`);
       }
     }
 
-    // Fallback C: Scan for any lone 3-digit sequence starting with 2, 3, or 4 if text context is muddy
+   
     if (extractedGpa === 0.0) {
       const genericDigits = text.match(/\b([2-4])(\d{2})\b/g);
       if (genericDigits && genericDigits.length > 0) {
@@ -63,7 +61,7 @@ export class OcrService {
       }
     }
 
-    // Safety check if document text layers are completely empty
+
     if (extractedGpa === 0.0) {
       this.logger.warn('[OCR AGENT] Failed to pull numeric indicators out of document layout.');
       return 'UNREADABLE';
