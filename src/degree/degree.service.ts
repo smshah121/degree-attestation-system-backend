@@ -1,5 +1,6 @@
-/* eslint-disable prettier/prettier */
+/* eslint-disable @typescript-eslint/no-misused-promises */
 /* eslint-disable @typescript-eslint/no-require-imports */
+/* eslint-disable @typescript-eslint/prefer-promise-reject-errors */
 /* eslint-disable prettier/prettier */
 import { Injectable, NotFoundException, ForbiddenException, InternalServerErrorException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -12,10 +13,9 @@ import * as crypto from 'crypto';
 import * as QRCode from 'qrcode';
 import { BlockchainService } from "src/blockchain/blockchain.service";
 import { OcrService } from "./ocr.service";
-import * as fs from 'fs';
-import * as path from 'path';
 import PDFDocument = require('pdfkit');
-
+import { v2 as cloudinary } from 'cloudinary';
+import * as streamifier from 'streamifier';
 
 @Injectable()
 export class DegreeService {
@@ -29,7 +29,6 @@ export class DegreeService {
     private readonly blockchainService: BlockchainService,
     private readonly ocrService: OcrService, 
   ) {}
-
 
   async createDegree(dto: CreateDegreeDto, userId: number) {
     const user = await this.userRepo.findOneBy({ id: userId });
@@ -53,88 +52,97 @@ export class DegreeService {
     return this.degreeRepo.save(degree);
   }
 
- 
- async uploadStudentTranscriptWithOcr(degreeId: number, fileBuffer: Buffer, relativePath: string, userId: number) {
-  const degree = await this.degreeRepo.findOne({
-    where: { id: degreeId },
-    relations: { student: true },
-  });
-  if (!degree) throw new NotFoundException('Degree record not found');
-  if (degree.student.id !== userId) {
-    throw new ForbiddenException('You can only upload a transcript to your own degree profile');
-  }
+  async uploadStudentTranscriptWithOcr(
+    degreeId: number, 
+    buffer: Buffer, 
+    file: Express.Multer.File, 
+    userId: number
+  ) {
+    const degree = await this.degreeRepo.findOne({
+      where: { id: degreeId },
+      relations: { student: true },
+    });
 
- 
-  const absolutePath = path.join(__dirname, '..', '..', relativePath);
-  const targetDir = path.dirname(absolutePath);
-  if (!fs.existsSync(targetDir)) {
-    fs.mkdirSync(targetDir, { recursive: true });
-  }
-  fs.writeFileSync(absolutePath, fileBuffer);
+    if (!degree) throw new NotFoundException('Degree record not found');
 
+    if (degree.student.id !== userId) {
+      throw new ForbiddenException('You can only upload a transcript to your own degree profile');
+    }
 
-  degree.marksheet = relativePath;
-  await this.degreeRepo.save(degree);
+    // 1. Upload Marksheet Image to Cloudinary first
+    const marksheetUrl = await new Promise<string>((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        { folder: 'degree' },
+        (error, result) => {
+          if (error) return reject(error);
+          if (!result?.secure_url) return reject(new Error('Cloudinary upload failed'));
+          resolve(result.secure_url);
+        }
+      );
+      streamifier.createReadStream(buffer).pipe(uploadStream);
+    });
 
- 
-  const scrapedText = await this.ocrService.extractText(fileBuffer);
+    degree.marksheet = marksheetUrl;
 
- 
-  console.log("================= AI OCR RAW EXTRACTED TEXT =================");
-  console.log(scrapedText || "[EMPTY TEXT EXTRACTED - IMAGE MIGHT BE BLURRY]");
-  console.log("=============================================================");
+    // 2. Extract and Process OCR
+    const scrapedText = await this.ocrService.extractText(buffer);
 
+    console.log('================= AI OCR RAW EXTRACTED TEXT =================');
+    console.log(scrapedText || '[EMPTY TEXT EXTRACTED - IMAGE MIGHT BE BLURRY]');
+    console.log('=============================================================');
 
-  const isNameVerified = this.ocrService.verifyMatch(scrapedText, degree.studentName);
-  if (!isNameVerified) {
-    console.warn(`[OCR WARNING] Name mismatch detected for Case #${degreeId}. Dropped to manual review.`);
-    
-    degree.status = DegreeStatus.PENDING; 
-    await this.degreeRepo.save(degree);
-    
-    return { 
-      status: 'PENDING', 
-      message: 'Transcript saved successfully. Identity alignment mismatch flags raised for manual administration review.' 
-    };
-  }
+    // 3. Verify Identity Matching
+    const isNameVerified = this.ocrService.verifyMatch(scrapedText, degree.studentName);
 
- 
-  const gpaValidationResult = this.ocrService.validateGpaMetric(scrapedText);
-  
+    if (!isNameVerified) {
+      console.warn(`[OCR WARNING] Name mismatch detected for Case #${degreeId}. Dropped to manual review.`);
+      degree.status = DegreeStatus.PENDING;
+      await this.degreeRepo.save(degree);
+      return {
+        status: 'PENDING',
+        message: 'Transcript saved successfully. Identity alignment mismatch flags raised for manual administration review.',
+      };
+    }
 
-  if (gpaValidationResult === 'REJECTED') {
-    console.warn(`[AUTO-REJECT] Case #${degreeId} dropped below academic standards (< 2.5).`);
-    degree.status = DegreeStatus.REJECTED; 
-    const rejectedDegree = await this.degreeRepo.save(degree);
-    return { 
-      status: 'REJECTED', 
-      message: 'Application declined automatically. Uploaded transcript GPA falls below the minimum required 2.5 CGPA standard. ❌',
-      reason: 'Transcript CGPA (2.37) falls below the minimum required 2.5 standard baseline. ❌',
-      degree: { ...rejectedDegree, marksheetPath: rejectedDegree.marksheet, pdfPath: rejectedDegree.pdf }
-    };
-  } 
-  
-  if (gpaValidationResult === 'UNREADABLE') {
-    console.warn(`[OCR WARNING] GPA metrics unreadable for Case #${degreeId}. Routing to admin desks.`);
-    degree.status = DegreeStatus.PENDING; // Send to admin queue if text layers are blurred
-    await this.degreeRepo.save(degree);
+    // 4. Validate Academic Metrics
+    const gpaValidationResult = this.ocrService.validateGpaMetric(scrapedText);
+
+    if (gpaValidationResult === 'REJECTED') {
+      console.warn(`[AUTO-REJECT] Case #${degreeId} dropped below academic standards (< 2.5).`);
+      degree.status = DegreeStatus.REJECTED;
+      const rejectedDegree = await this.degreeRepo.save(degree);
+      return {
+        status: 'REJECTED',
+        message: 'Application declined automatically. Uploaded transcript GPA falls below the minimum required 2.5 CGPA standard. ❌',
+        reason: 'Transcript CGPA falls below the minimum required 2.5 standard baseline. ❌',
+        degree: {
+          ...rejectedDegree,
+          marksheetPath: rejectedDegree.marksheet,
+          pdfPath: rejectedDegree.pdf,
+        },
+      };
+    }
+
+    if (gpaValidationResult === 'UNREADABLE') {
+      console.warn(`[OCR WARNING] GPA metrics unreadable for Case #${degreeId}. Routing to admin desks.`);
+      degree.status = DegreeStatus.PENDING;
+      await this.degreeRepo.save(degree);
+      return {
+        status: 'PENDING',
+        message: 'Transcript saved. GPA notation fields unreadable by AI engine. Forwarded for manual evaluation.',
+      };
+    }
+
+    // 5. Run Auto Approval Pipeline
+    console.log(`[AUTO-APPROVAL SUCCESS] OCR verified Case #${degreeId}. Running smart contract deployment tasks...`);
+    const approvedDegree = await this.approveDegree(degreeId);
+
     return {
-      status: 'PENDING',
-      message: 'Transcript saved. GPA notation fields unreadable by AI engine. Forwarded for manual evaluation.'
+      status: 'APPROVED',
+      message: 'AI Evaluation processing complete. Transcript passed identity and GPA requirements. Certificate generated and anchored safely to the ledger! ✅',
+      degree: approvedDegree,
     };
   }
-
-  
-  console.log(`[AUTO-APPROVAL SUCCESS] OCR verified Case #${degreeId}. Running smart contract deployment tasks...`);
-  const approvedDegree = await this.approveDegree(degreeId);
-
-  return {
-    status: 'APPROVED',
-    message: 'AI Evaluation processing complete. Transcript passed identity and GPA requirements. Certificate generated and anchored safely to the ledger! ✅',
-    degree: approvedDegree,
-  };
-}
-
 
   async approveDegree(id: number) {
     const degree = await this.degreeRepo.findOne({
@@ -152,13 +160,10 @@ export class DegreeService {
       graduationYear: degree.graduationYear,
     }, ['studentName', 'studentId', 'title', 'program', 'university', 'graduationYear']);
 
-    const hash = crypto
-      .createHash('sha256')
-      .update(rawData)
-      .digest('hex');
-
+    const hash = crypto.createHash('sha256').update(rawData).digest('hex');
     const qrCodeDataUrl = await QRCode.toDataURL(hash);
 
+    // Anchor securely on-chain
     let txHash: string;
     try {
       txHash = await this.blockchainService.storeDegree(
@@ -170,106 +175,103 @@ export class DegreeService {
       throw new InternalServerErrorException('Blockchain anchoring transaction failed.');
     }
 
-    const folderPath = path.join(__dirname, '..', '..', 'uploads', 'degree', 'pdfs');
-    if (!fs.existsSync(folderPath)) {
-      fs.mkdirSync(folderPath, { recursive: true });
-    }
+    // Build PDF Certificate dynamically in-memory
+    const pdfUrl = await new Promise<string>((resolve, reject) => {
+      const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 40 });
+      
+      const buffers: Buffer[] = [];
+      doc.on('data', (chunk) => buffers.push(chunk));
+      doc.on('end', () => {
+        const pdfBuffer = Buffer.concat(buffers);
+        
+        // Stream the memory buffer safely up to Cloudinary
+        const uploadStream = cloudinary.uploader.upload_stream(
+          { folder: 'degree', resource_type: 'raw' },
+          (error, result) => {
+            if (error) return reject(error);
+            if (!result?.secure_url) return reject(new Error('Cloudinary Certificate upload failed'));
+            resolve(result.secure_url);
+          }
+        );
+        streamifier.createReadStream(pdfBuffer).pipe(uploadStream);
+      });
+      doc.on('error', (err) => reject(err));
 
-    const filename = `attested-certificate-${id}-${Date.now()}.pdf`;
-    const relativePdfPath = `uploads/degree/pdfs/${filename}`;
-    const absolutePdfPath = path.join(folderPath, filename);
+      // Visual Design Construction
+      doc.rect(20, 20, doc.page.width - 40, doc.page.height - 40).lineWidth(3).stroke('#0f172a');
+      doc.rect(25, 25, doc.page.width - 50, doc.page.height - 50).lineWidth(1).stroke('#0d9488');
 
-    const doc = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 40 });
-    const writeStream = fs.createWriteStream(absolutePdfPath);
-    doc.pipe(writeStream);
+      doc.moveDown(2);
+      doc.fillColor('#0f172a').fontSize(28).font('Helvetica-Bold').text(String(degree.university || 'UNIVERSITY').toUpperCase(), { align: 'center' });
+      doc.fillColor('#0d9488').fontSize(12).font('Helvetica').text('SECURE DEGREE VERIFICATION ATTESTATION STANDARDS', { align: 'center', characterSpacing: 2 });
+      
+      doc.moveDown(2);
+      doc.fillColor('#475569').fontSize(16).font('Helvetica-Oblique').text('This document formally validates that', { align: 'center' });
+      
+      doc.moveDown(1);
+      doc.fillColor('#0f172a').fontSize(24).font('Helvetica-Bold').text(degree.studentName || 'Honored Graduate', { align: 'center' });
+      
+      doc.moveDown(0.5);
+      doc.fillColor('#475569').fontSize(14).font('Helvetica').text(`Bearing Registered Matrix Student Identification Key: ${degree.studentId || id}`, { align: 'center' });
+      
+      doc.moveDown(1.5);
+      doc.fillColor('#475569').fontSize(14).text('has successfully met all academic criteria set forth by boards for the completion of', { align: 'center' });
+      
+      const verifiedTitle = degree.title || 'Bachelor of Science';
+      const verifiedProgram = degree.program || 'Software Engineering';
 
-    doc.rect(20, 20, doc.page.width - 40, doc.page.height - 40).lineWidth(3).stroke('#0f172a');
-    doc.rect(25, 25, doc.page.width - 50, doc.page.height - 50).lineWidth(1).stroke('#0d9488');
+      doc.moveDown(1);
+      doc.fillColor('#0d9488').fontSize(20).font('Helvetica-Bold').text(`${verifiedTitle} in ${verifiedProgram}`, { align: 'center' });
+      doc.fillColor('#475569').fontSize(14).font('Helvetica').text(`Conferred within the graduation timeline cohort of ${degree.graduationYear || new Date().getFullYear()}`, { align: 'center' });
 
-    doc.moveDown(2);
-    doc.fillColor('#0f172a').fontSize(28).font('Helvetica-Bold').text(String(degree.university || 'UNIVERSITY').toUpperCase(), { align: 'center' });
-    doc.fillColor('#0d9488').fontSize(12).font('Helvetica').text('SECURE DEGREE VERIFICATION ATTESTATION STANDARDS', { align: 'center', characterSpacing: 2 });
-    
-    doc.moveDown(2);
-    doc.fillColor('#475569').fontSize(16).font('Helvetica-Oblique').text('This document formally validates that', { align: 'center' });
-    
-    doc.moveDown(1);
-    doc.fillColor('#0f172a').fontSize(24).font('Helvetica-Bold').text(degree.studentName || 'Honored Graduate', { align: 'center' });
-    
-    doc.moveDown(0.5);
-    doc.fillColor('#475569').fontSize(14).font('Helvetica').text(`Bearing Registered Matrix Student Identification Key: ${degree.studentId || id}`, { align: 'center' });
-    
-    doc.moveDown(1.5);
-    doc.fillColor('#475569').fontSize(14).text('has successfully met all academic criteria set forth by boards for the completion of', { align: 'center' });
-    
-    const verifiedTitle = degree.title || 'Bachelor of Science';
-    const verifiedProgram = degree.program || 'Software Engineering';
+      doc.image(qrCodeDataUrl, doc.page.width / 2 - 50, doc.page.height - 165, { width: 100, height: 100 });
 
-    doc.moveDown(1);
-    doc.fillColor('#0d9488').fontSize(20).font('Helvetica-Bold').text(`${verifiedTitle} in ${verifiedProgram}`, { align: 'center' });
-    doc.fillColor('#475569').fontSize(14).font('Helvetica').text(`Conferred within the graduation timeline cohort of ${degree.graduationYear || new Date().getFullYear()}`, { align: 'center' });
+      doc.fillColor('#94a3b8').fontSize(8).font('Courier').text(`SECURE SHA256 BLOCK HASH: ${hash}`, 40, doc.page.height - 55, { align: 'center', width: doc.page.width - 80 });
+      doc.text(`LEDGER TRANSACTION SIGNATURE REFERENCE: ${txHash}`, 40, doc.page.height - 43, { align: 'center', width: doc.page.width - 80 });
 
-    doc.image(qrCodeDataUrl, doc.page.width / 2 - 50, doc.page.height - 165, { width: 100, height: 100 });
-
-    doc.fillColor('#94a3b8').fontSize(8).font('Courier').text(`SECURE SHA256 BLOCK HASH: ${hash}`, 40, doc.page.height - 55, { align: 'center', width: doc.page.width - 80 });
-    doc.text(`LEDGER TRANSACTION SIGNATURE REFERENCE: ${txHash}`, 40, doc.page.height - 43, { align: 'center', width: doc.page.width - 80 });
-
-    doc.end();
+      doc.end();
+    });
 
     degree.rawData = rawData;   
     degree.hash = hash;
     degree.qrCode = qrCodeDataUrl;
     degree.status = DegreeStatus.APPROVED;
     degree.transactionHash = txHash;
-    degree.pdf = relativePdfPath; 
+    degree.pdf = pdfUrl; 
     degree.approvedAt = new Date();
-
-    console.log(`[AUTOMATION] Vault PDF generated successfully for Degree Case #${id}`);
-
-    await new Promise<void>((resolve) => writeStream.on('finish', () => resolve()));
 
     const updated = await this.degreeRepo.save(degree);
     return { ...updated, marksheetPath: updated.marksheet, pdfPath: updated.pdf };
   }
-
 
   async rejectDegree(id: number) {
     const degree = await this.degreeRepo.findOneBy({ id });
     if (!degree) throw new NotFoundException('Degree not found');
 
     degree.status = DegreeStatus.REJECTED;
-    console.log(`[AUDIT] Degree #${id} rejected at ${new Date().toISOString()}`);
-
     const updated = await this.degreeRepo.save(degree);
     return { ...updated, marksheetPath: updated.marksheet, pdfPath: updated.pdf };
   }
 
-
-  async uploadPdf(degreeId: number, pdfPath: string) {
+  async uploadPdf(degreeId: number, file: Express.Multer.File) {
     const degree = await this.degreeRepo.findOneBy({ id: degreeId });
     if (!degree) throw new NotFoundException('Degree not found');
 
-    degree.pdf = pdfPath;
-    const updatedDegree = await this.degreeRepo.save(degree);
-    return { ...updatedDegree, pdfPath: updatedDegree.pdf };
-  }
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        { folder: 'degree', resource_type: 'raw' },
+        async (error, result) => {
+          if (error) return reject(error);
+          if (!result?.secure_url) return reject(new Error('Cloudinary PDF upload failed'));
 
- 
-  async uploadMarksheet(degreeId: number, imagePath: string, userId: number) {
-    const degree = await this.degreeRepo.findOne({
-      where: { id: degreeId },
-      relations: { student: true },
+          degree.pdf = result.secure_url;
+          const updatedDegree = await this.degreeRepo.save(degree);
+          resolve({ ...updatedDegree, pdfPath: updatedDegree.pdf });
+        },
+      );
+      streamifier.createReadStream(file.buffer).pipe(uploadStream);
     });
-    if (!degree) throw new NotFoundException('Degree not found');
-    if (degree.student.id !== userId) {
-      throw new ForbiddenException('You can only upload to your own degree');
-    }
-
-    degree.marksheet = imagePath;
-    const updatedDegree = await this.degreeRepo.save(degree);
-    return { ...updatedDegree, marksheetPath: updatedDegree.marksheet };
   }
-
 
   async findAll() {
     const records = await this.degreeRepo.find({
@@ -279,7 +281,6 @@ export class DegreeService {
     return records.map(d => ({ ...d, marksheetPath: d.marksheet, pdfPath: d.pdf }));
   }
 
-
   async findPending() {
     const records = await this.degreeRepo.find({
       where: { status: DegreeStatus.PENDING },
@@ -288,7 +289,6 @@ export class DegreeService {
     });
     return records.map(d => ({ ...d, marksheetPath: d.marksheet, pdfPath: d.pdf }));
   }
-
 
   async findOne(id: number, isAdmin?: boolean) {
     const degree = await this.degreeRepo.findOne({
@@ -302,10 +302,8 @@ export class DegreeService {
       degree.qrCode = null;
       degree.pdf = null;
     }
-
     return { ...degree, marksheetPath: degree.marksheet, pdfPath: degree.pdf };
   }
-
 
   async findMyDegrees(userId: number) {
     const degrees = await this.degreeRepo.find({
@@ -324,38 +322,25 @@ export class DegreeService {
     });
   }
 
-
   async verifyByHash(hash: string) {
-    console.log(`[AUDIT] Verification attempt for hash: ${hash} at ${new Date().toISOString()}`);
-
     const degree = await this.degreeRepo.findOne({
       where: { hash },
       relations: { student: true },
     });
 
     if (!degree) {
-      console.log(`[AUDIT] FAKE/INVALID degree attempt for hash: ${hash}`);
-      return {
-        valid: false,
-        message: 'Invalid degree — hash not found ❌',
-      };
+      return { valid: false, message: 'Invalid degree — hash not found ❌' };
     }
 
     if (degree.status !== DegreeStatus.APPROVED) {
-      return {
-        valid: false,
-        message: 'Degree is not approved ❌',
-      };
+      return { valid: false, message: 'Degree is not approved ❌' };
     }
 
     const cleanStudentId = String(degree.studentId).trim();
 
     try {
       const onChain = await this.blockchainService.verifyDegree(cleanStudentId);
-
-      if (!onChain) {
-        return { valid: false, message: 'Not found on blockchain ❌' };
-      }
+      if (!onChain) return { valid: false, message: 'Not found on blockchain ❌' };
 
       const chainData = await this.blockchainService.getDegree(cleanStudentId);
       const storedData = JSON.parse(degree.rawData!);
@@ -363,10 +348,7 @@ export class DegreeService {
       return {
         valid: true,
         message: 'Degree is valid ✅',
-        verifiedOn: {
-          database: true,
-          blockchain: true,
-        },
+        verifiedOn: { database: true, blockchain: true },
         blockchainProof: {
           transactionHash: degree.transactionHash,
           storedOnChainAt: chainData?.timestamp,
@@ -381,16 +363,11 @@ export class DegreeService {
           approvedAt: degree.approvedAt,
         },
       };
-
     } catch (blockchainError) {
-      console.error(`[BLOCKCHAIN ERROR] Failed reading ledger mapping keys:`, blockchainError);
-      return {
-        valid: false,
-        message: 'Blockchain node query interaction failed ❌',
-      };
+      console.error(`[BLOCKCHAIN ERROR]:`, blockchainError);
+      return { valid: false, message: 'Blockchain node query interaction failed ❌' };
     }
   }
-
 
   async deleteDegree(id: number) {
     const degree = await this.degreeRepo.findOneBy({ id });
@@ -398,21 +375,11 @@ export class DegreeService {
     return this.degreeRepo.remove(degree);
   }
 
-
   async getDashboardStats() {
     const total = await this.degreeRepo.count();
-
-    const pending = await this.degreeRepo.count({
-      where: { status: DegreeStatus.PENDING },
-    });
-
-    const approved = await this.degreeRepo.count({
-      where: { status: DegreeStatus.APPROVED },
-    });
-
-    const rejected = await this.degreeRepo.count({
-      where: { status: DegreeStatus.REJECTED },
-    });
+    const pending = await this.degreeRepo.count({ where: { status: DegreeStatus.PENDING } });
+    const approved = await this.degreeRepo.count({ where: { status: DegreeStatus.APPROVED } });
+    const rejected = await this.degreeRepo.count({ where: { status: DegreeStatus.REJECTED } });
 
     const recentDegrees = await this.degreeRepo.find({
       relations: { student: true },
@@ -428,7 +395,6 @@ export class DegreeService {
       recentDegrees: recentDegrees.map(d => ({ ...d, marksheetPath: d.marksheet, pdfPath: d.pdf })),
     };
   }
-
 
   async getAuditLog() {
     const allDegrees = await this.degreeRepo.find({
@@ -451,7 +417,6 @@ export class DegreeService {
       studentEmail: d.student?.email ?? null,
     }));
   }
-
 
   async getReport() {
     const total = await this.degreeRepo.count();

@@ -12,10 +12,12 @@ import {
   UseGuards,
   Request,
   Body,
+  BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { Express } from 'express';
+import { memoryStorage } from 'multer';
+
 import { DegreeService } from './degree.service';
 import { CreateDegreeDto } from './dto/create-degree.dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-guard';
@@ -24,21 +26,11 @@ import { Roles } from 'src/common/decorators/roles.decorators';
 import { UserRole } from 'src/common/enums/user-role';
 import { Public } from 'src/common/decorators/public-decorator';
 
-const pdfStorage = diskStorage({
-  destination: './uploads/degrees/pdf',
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, `degree-${uniqueSuffix}${extname(file.originalname)}`);
-  },
-});
-
-
 @Controller('degrees')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class DegreeController {
   constructor(private readonly degreeService: DegreeService) {}
 
- 
   @Post()
   @Roles(UserRole.STUDENT)                    
   createDegree(
@@ -48,28 +40,33 @@ export class DegreeController {
     return this.degreeService.createDegree(dto, req.user.id); 
   }
 
-
   @Post(':degreeId/upload-pdf')
   @Roles(UserRole.ADMIN)
   @UseInterceptors(
     FileInterceptor('pdf', {
-      storage: pdfStorage,
+      storage: memoryStorage(),
+      limits: { fileSize: 10 * 1024 * 1024 }, // 10MB Limit
       fileFilter: (req, file, cb) => {
         if (file.mimetype === 'application/pdf') {
           cb(null, true);
         } else {
-          cb(new Error('Only PDF files are allowed'), false);
+          cb(
+            new BadRequestException('Only PDF files are allowed'),
+            false,
+          );
         }
       },
     }),
   )
-  uploadPdf(
+  async uploadPdf(
     @Param('degreeId', ParseIntPipe) degreeId: number,
     @UploadedFile() file: Express.Multer.File,
   ) {
-    return this.degreeService.uploadPdf(degreeId, file.path);
+    if (!file) {
+      throw new BadRequestException('No PDF file uploaded.');
+    }
+    return await this.degreeService.uploadPdf(degreeId, file);
   }
-
 
   @Patch(':id/approve')
   @Roles(UserRole.ADMIN)
@@ -77,13 +74,11 @@ export class DegreeController {
     return this.degreeService.approveDegree(id);
   }
 
-
   @Patch(':id/reject')
   @Roles(UserRole.ADMIN)
   rejectDegree(@Param('id', ParseIntPipe) id: number) {
     return this.degreeService.rejectDegree(id);
   }
-
 
   @Get('dashboard/stats')
   @Roles(UserRole.ADMIN)
@@ -91,13 +86,11 @@ export class DegreeController {
     return this.degreeService.getDashboardStats();
   }
 
-
   @Get('audit/log')
   @Roles(UserRole.ADMIN)
   getAuditLog() {
     return this.degreeService.getAuditLog();
   }
-
 
   @Get('report/summary')
   @Roles(UserRole.ADMIN)
@@ -105,13 +98,11 @@ export class DegreeController {
     return this.degreeService.getReport();
   }
 
-
   @Get('pending')
   @Roles(UserRole.ADMIN)
   findPending() {
     return this.degreeService.findPending();
   }
-
  
   @Get('verify/:hash')
   @Public()
@@ -119,17 +110,22 @@ export class DegreeController {
     return this.degreeService.verifyByHash(hash);
   }
 
-
   @Post(':id/upload-transcript-ocr')
-  @Roles(UserRole.STUDENT) 
+  @Roles(UserRole.STUDENT)
   @UseInterceptors(
     FileInterceptor('file', {
-     
+      storage: memoryStorage(),
+      limits: { fileSize: 10 * 1024 * 1024 }, // 10MB Limit
       fileFilter: (req, file, cb) => {
         if (file.mimetype.match(/\/(jpg|jpeg|png)$/)) {
           cb(null, true);
         } else {
-          cb(new Error('Only JPG, JPEG, and PNG image formats are supported by the AI engine! ❌'), false);
+          cb(
+            new BadRequestException(
+              'Only JPG, JPEG, and PNG image formats are supported by the AI engine! ❌',
+            ),
+            false,
+          );
         }
       },
     }),
@@ -139,24 +135,41 @@ export class DegreeController {
     @UploadedFile() file: Express.Multer.File,
     @Request() req: any,
   ) {
-    
-    const relativePath = `uploads/degrees/marksheets/transcript-${id}-${Date.now()}-${file.originalname}`;
-    
-   
-    return await this.degreeService.uploadStudentTranscriptWithOcr(
-      id,
-      file.buffer,
-      relativePath,
-      req.user.id,
-    );
-  }
+    if (!file) {
+      throw new BadRequestException('No transcript file uploaded.');
+    }
 
+    try {
+      return await this.degreeService.uploadStudentTranscriptWithOcr(
+        id,
+        file.buffer,
+        file,
+        req.user.id,
+      );
+    } catch (error: any) {
+      console.error(
+        '❌ [OCR ERROR LOGGED IN TERMINAL]:',
+        error?.message || error,
+      );
+
+      const errorMessage =
+        error?.response?.message ||
+        error?.message ||
+        'Transcript OCR identity matching validation failed.';
+
+      throw new BadRequestException({
+        statusCode: 400,
+        message: errorMessage,
+        error: 'Bad Request',
+      });
+    }
+  }
+  
   @Get('my-degrees')
   @Roles(UserRole.STUDENT)
   findMyDegrees(@Request() req: any) {
     return this.degreeService.findMyDegrees(req.user.id);
   }
-
 
   @Get()
   @Roles(UserRole.ADMIN)
@@ -164,14 +177,12 @@ export class DegreeController {
     return this.degreeService.findAll();
   }
 
-
   @Get(':id')
   @Roles(UserRole.ADMIN, UserRole.STUDENT)
   findOne(@Param('id', ParseIntPipe) id: number, @Request() req: any) {
     const isAdmin = req.user.role === UserRole.ADMIN;
     return this.degreeService.findOne(id, isAdmin); 
   }
-
 
   @Delete(':id')
   @Roles(UserRole.ADMIN)

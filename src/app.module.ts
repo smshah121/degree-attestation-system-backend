@@ -1,31 +1,44 @@
-/* eslint-disable prettier/prettier */
-import { TypeOrmModule } from '@nestjs/typeorm';  // ← add this import
 import { Module } from '@nestjs/common';
-import { User } from './user/entities/user.entity';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
 import { UserModule } from './user/user.module';
+
 import { AuthModule } from './auth/auth.module';
-import { DegreeModule } from './degree/degree.module';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { User } from './user/entities/user.entity';
 import { Degree } from './degree/entities/degree.entity';
-import { BlockchainModule } from './blockchain/blockchain.module';
-import { ConfigModule } from '@nestjs/config';
+import { DegreeModule } from './degree/degree.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forRoot({
-      type: 'postgres',
-      host: 'localhost',
-      port: 5433,
-      username: 'postgres',
-      password: 'SmShah@12345',
-      database: 'degree',
-      entities: [User, Degree],
-      synchronize: true,
+    ConfigModule.forRoot({
+      isGlobal: true, // very important, so we can access env everywhere
     }),
-    ConfigModule.forRoot({ isGlobal: true }),
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        type: 'postgres',
+        host: config.get<string>('DB_HOST'),
+        port: config.get<number>('DB_PORT'),
+        username: config.get<string>('DB_USERNAME'),
+        password: config.get<string>('DB_PASSWORD'),
+        database: config.get<string>('DB_NAME'),
+        entities: [User, Degree],
+        synchronize: false, // migrations use karenge
+        ssl: config.get<boolean>('DB_SSL')
+          ? { rejectUnauthorized: false }
+          : false,
+      }),
+    }),
+
+    // App modules
     UserModule,
-    AuthModule,
     DegreeModule,
-    BlockchainModule
+    AuthModule,
   ],
+  controllers: [AppController],
+  providers: [AppService],
 })
 export class AppModule {}

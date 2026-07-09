@@ -37,7 +37,7 @@ export class StripeService {
       mode: 'payment',
       customer_email: studentEmail,
 
-      success_url: `http://localhost:5173/student-dashboard?payment=success&id=${degreeId}`,
+      success_url: `http://localhost:5173/student-dashboard`,
       cancel_url: `http://localhost:5173/student-dashboard?payment=cancelled`,
       metadata: {
         degreeId: String(degreeId), 
