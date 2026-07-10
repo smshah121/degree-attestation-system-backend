@@ -192,7 +192,11 @@ console.log('======================');
         
         // Stream the memory buffer safely up to Cloudinary
         const uploadStream = cloudinary.uploader.upload_stream(
-          { folder: 'degree', resource_type: 'raw' },
+          { folder: 'degree', 
+            resource_type: 'raw' ,
+            public_id: `certificate-${degree.id}.pdf`
+
+          },
           (error, result) => {
             if (error) return reject(error);
             if (!result?.secure_url) return reject(new Error('Cloudinary Certificate upload failed'));
