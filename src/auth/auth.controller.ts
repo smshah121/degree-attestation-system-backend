@@ -42,7 +42,7 @@ getProfile(@Req() req) {
     const role = req.user.role || 'STUDENT'; // Safe assignment mapping
     const id = req.user.id;
     
-    return res.redirect(`http://localhost:5173/oauth-success?token=${token}&role=${role}&id=${id}`);
+    return res.redirect(`https://degree-attestation.netlify.app/oauth-success?token=${token}&role=${role}&id=${id}`);
   }
 
   @Post("register")
