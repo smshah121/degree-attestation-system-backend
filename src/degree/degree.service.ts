@@ -52,6 +52,7 @@ export class DegreeService {
     return this.degreeRepo.save(degree);
   }
 
+  
   async uploadStudentTranscriptWithOcr(
     degreeId: number, 
     buffer: Buffer, 
@@ -68,6 +69,10 @@ export class DegreeService {
     if (degree.student.id !== userId) {
       throw new ForbiddenException('You can only upload a transcript to your own degree profile');
     }
+
+    console.log('======================');
+console.log(cloudinary.config());
+console.log('======================');
 
     // 1. Upload Marksheet Image to Cloudinary first
     const marksheetUrl = await new Promise<string>((resolve, reject) => {
