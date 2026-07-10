@@ -14,8 +14,9 @@ import * as QRCode from 'qrcode';
 import { BlockchainService } from "src/blockchain/blockchain.service";
 import { OcrService } from "./ocr.service";
 import PDFDocument = require('pdfkit');
-import { v2 as cloudinary } from 'cloudinary';
+
 import * as streamifier from 'streamifier';
+import cloudinary from 'src/common/cloudinary/cloudinary.config';
 
 @Injectable()
 export class DegreeService {
