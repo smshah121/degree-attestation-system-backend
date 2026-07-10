@@ -194,8 +194,8 @@ console.log('======================');
         const uploadStream = cloudinary.uploader.upload_stream(
           { folder: 'degree', 
             resource_type: 'raw' ,
-            public_id: `certificate-${degree.id}.pdf`
-
+            public_id: `certificate-${degree.id}.pdf`,
+            overwrite: true,
           },
           (error, result) => {
             if (error) return reject(error);
