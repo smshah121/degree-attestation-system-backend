@@ -151,6 +151,7 @@ console.log('======================');
   }
 
   async approveDegree(id: number) {
+    
     const degree = await this.degreeRepo.findOne({
       where: { id },
       relations: { student: true },
@@ -168,7 +169,11 @@ console.log('======================');
 
     const hash = crypto.createHash('sha256').update(rawData).digest('hex');
     const qrCodeDataUrl = await QRCode.toDataURL(hash);
-
+    console.log("===== APPROVE DEGREE =====");
+console.log("Degree ID:", degree.id);
+console.log("Student ID:", degree.studentId);
+console.log("Status:", degree.status);
+console.log("Hash:", hash);
     // Anchor securely on-chain
     let txHash: string;
     try {
@@ -180,6 +185,10 @@ console.log('======================');
       console.error('[BLOCKCHAIN] Transaction reverted:', blockchainError);
       throw new InternalServerErrorException('Blockchain anchoring transaction failed.');
     }
+    console.log("Degree ID:", degree.id);
+console.log("Student ID:", degree.studentId);
+console.log("Status:", degree.status);
+console.log("Hash:", hash);
 
     // Build PDF Certificate dynamically in-memory
     const pdfUrl = await new Promise<string>((resolve, reject) => {
