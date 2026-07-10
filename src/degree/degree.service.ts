@@ -195,6 +195,7 @@ console.log('======================');
           { folder: 'degree', 
             resource_type: 'raw' ,
             public_id: `certificate-${degree.id}.pdf`,
+            format: "pdf",
             overwrite: true,
           },
           (error, result) => {
