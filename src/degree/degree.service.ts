@@ -199,6 +199,9 @@ console.log('======================');
             overwrite: true,
           },
           (error, result) => {
+            console.log("========== CLOUDINARY RESULT ==========");
+  console.log(result);
+  console.log("=======================================");
             if (error) return reject(error);
             if (!result?.secure_url) return reject(new Error('Cloudinary Certificate upload failed'));
             resolve(result.secure_url);
